@@ -127,6 +127,7 @@ jobs:
             echo "⚠️  Warning: Bootstrap S3 Stack not found. Using default naming."
             ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
             S3_BUCKET="my-cfn-artifacts-${ENV}-${ACCOUNT_ID}"
+            # ACCOUNT_ID는 로그에 출력하지 않음 (보안)
           fi
           
           KMS_KEY_ARN=$(aws cloudformation describe-stacks \
@@ -153,8 +154,8 @@ jobs:
           echo "kms_key_arn=${KMS_KEY_ARN}" >> $GITHUB_OUTPUT
           
           echo "📋 Bootstrap Stack Outputs:"
-          echo "   S3 Bucket: ${S3_BUCKET}"
-          echo "   KMS Key ARN: ${KMS_KEY_ARN}"
+          echo "   S3 Bucket: ***REDACTED*** (configured)"
+          echo "   KMS Key ARN: ***REDACTED*** (configured)"
       
       - name: Generate Parameters from env/ file
         if: github.event.inputs.action != 'delete'
@@ -174,11 +175,9 @@ jobs:
             echo "⚠️  Generated new SECRET_KEY (not from GitHub Secrets)"
           fi
           
-          # DB 자격증명 (GitHub Secrets에서 가져오기 - 환경별 분리) ⭐
           ENV="${{ env.ENV }}"
           DB_USERNAME="${{ secrets.DB_USERNAME }}"
           
-          # 환경별 DB 비밀번호 선택
           if [ "$ENV" = "dev" ]; then
             DB_PASSWORD="${{ secrets.DB_PASSWORD_DEV }}"
           elif [ "$ENV" = "test" ]; then

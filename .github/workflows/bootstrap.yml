@@ -124,20 +124,12 @@ jobs:
           for ENV in dev test prod; do
             if aws cloudformation describe-stacks --stack-name bootstrap-s3-${ENV} --region ap-northeast-2 &>/dev/null; then
               echo "✅ S3 Stack exists for ${ENV}"
-              aws cloudformation describe-stacks \
-                --stack-name bootstrap-s3-${ENV} \
-                --region ap-northeast-2 \
-                --query 'Stacks[0].Outputs' \
-                --output table
+              # Stack Outputs는 민감 정보(Account ID 등) 포함 가능하므로 출력하지 않음
             fi
             
             if aws cloudformation describe-stacks --stack-name bootstrap-kms-${ENV} --region ap-northeast-2 &>/dev/null; then
               echo "✅ KMS Stack exists for ${ENV}"
-              aws cloudformation describe-stacks \
-                --stack-name bootstrap-kms-${ENV} \
-                --region ap-northeast-2 \
-                --query 'Stacks[0].Outputs' \
-                --output table
+              # Stack Outputs는 민감 정보(KMS Key ARN 등) 포함 가능하므로 출력하지 않음
             fi
           done
 

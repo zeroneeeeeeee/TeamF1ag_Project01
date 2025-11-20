@@ -36,7 +36,8 @@ Resources:
             Resource: '*'
             Condition:
               ArnLike:
-                kms:EncryptionContext:aws:logs:arn: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/${Env}/*
+                #kms:EncryptionContext:aws:logs:arn: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/${Env}/*
+                kms:EncryptionContext:aws:logs:arn: arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:*
           - Sid: AllowCloudWatchLogsDescribeKey
             Effect: Allow
             Principal:

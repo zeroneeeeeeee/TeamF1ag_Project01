@@ -29,6 +29,8 @@ Resources:
             Condition:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                #token.actions.githubusercontent.com:sub: !Sub repo:${GitHubRepo}:*
                 token.actions.githubusercontent.com:sub: !Sub repo:${GitHubRepo}:ref:refs/heads/*
       Policies:
         - PolicyName: GitHubActionsDeployPolicy

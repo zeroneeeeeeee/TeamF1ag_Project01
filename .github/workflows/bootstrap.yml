@@ -45,15 +45,16 @@ jobs:
       - name: Deploy OIDC Stack
         if: github.event.inputs.stack == 'oidc' || github.event.inputs.stack == 'all'
         run: |
-          if [ -z "${{ github.event.inputs.github_repo }}" ]; then
-            echo "❌ Error: github_repo is required for OIDC stack"
-            exit 1
+          GITHUB_REPO="${{ github.event.inputs.github_repo }}"
+          if [ -z "$GITHUB_REPO" ]; then
+            GITHUB_REPO="${{ github.repository }}"
+            echo "ℹ️  Using default GitHub repository: ${GITHUB_REPO}"
           fi
           
           aws cloudformation deploy \
             --template-file cfn/bootstrap/oidc.yaml \
             --stack-name bootstrap-oidc \
-            --parameter-overrides GitHubRepo=${{ github.event.inputs.github_repo }} \
+            --parameter-overrides GitHubRepo=${GITHUB_REPO} \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
           

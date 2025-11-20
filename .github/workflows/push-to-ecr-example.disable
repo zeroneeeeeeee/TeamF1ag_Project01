@@ -1,0 +1,83 @@
+name: Build and Push to ECR
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read 
+
+env:
+  AWS_REGION: ap-northeast-2
+  AWS_ROLE_ARN: arn:aws:iam::REPLACE_WITH_ACCOUNT_ID:role/TeamECRPushRole
+  ECR_REPOSITORY_NAME: teamf1ag-ecr
+  ENV: dev
+  APP_NAME: myapp
+  STACK_NAME: dev-root
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v5.1.0
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Login to ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      
+      - name: Build, tag, and push image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ env.ECR_REPOSITORY_NAME }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          echo "✅ Image pushed: $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          echo "✅ Image pushed: $ECR_REGISTRY/$ECR_REPOSITORY:latest"
+      
+      - name: Update ECS Service (Force New Deployment)
+        env:
+          CLUSTER_NAME: ${{ env.ENV }}-${{ env.APP_NAME }}-cluster
+          SERVICE_NAME: ${{ env.ENV }}-${{ env.APP_NAME }}-service
+        run: |
+          echo "🔄 Updating ECS Service to use new image..."
+          CLUSTER=$(aws cloudformation describe-stacks \
+            --stack-name ${{ env.STACK_NAME }} \
+            --region ${{ env.AWS_REGION }} \
+            --query 'Stacks[0].Outputs[?OutputKey==`ClusterName`].OutputValue' \
+            --output text 2>/dev/null || echo "")
+          SERVICE=$(aws cloudformation describe-stacks \
+            --stack-name ${{ env.STACK_NAME }} \
+            --region ${{ env.AWS_REGION }} \
+            --query 'Stacks[0].Outputs[?OutputKey==`ServiceName`].OutputValue' \
+            --output text 2>/dev/null || echo "")
+          if [ -z "$CLUSTER" ] || [ -z "$SERVICE" ]; then
+            echo "⚠️  Warning: Could not get ECS cluster/service from CloudFormation stack"
+            echo "   Stack: ${{ env.STACK_NAME }}"
+            echo "   Cluster: $CLUSTER"
+            echo "   Service: $SERVICE"
+            echo "   Skipping ECS service update..."
+          else
+            echo "   Cluster: $CLUSTER"
+            echo "   Service: $SERVICE"
+            aws ecs update-service \
+              --cluster "$CLUSTER" \
+              --service "$SERVICE" \
+              --force-new-deployment \
+              --region ${{ env.AWS_REGION }}
+            echo "✅ ECS service update triggered"
+            echo "   New deployment will use image: ${{ env.ECR_REPOSITORY_NAME }}:latest"
+          fi

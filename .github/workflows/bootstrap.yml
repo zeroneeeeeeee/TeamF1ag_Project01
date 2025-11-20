@@ -1,5 +1,17 @@
 name: Deploy Bootstrap Stack
 
+# ⚠️ 중요: OIDC Stack은 GitHub Actions에서 배포할 수 없습니다.
+# OIDC Stack은 GitHub Actions 인증에 필요하므로, 최초 1회는 로컬에서 수동으로 배포해야 합니다.
+# 
+# 로컬에서 OIDC Stack 배포 명령어:
+#   aws cloudformation deploy \
+#     --template-file cfn/bootstrap/oidc.yaml \
+#     --stack-name bootstrap-oidc \
+#     --parameter-overrides GitHubRepo=username/repo \
+#     --capabilities CAPABILITY_NAMED_IAM
+#
+# OIDC Stack 배포 후에야 이 워크플로우가 정상적으로 실행될 수 있습니다.
+
 on:
   workflow_dispatch:
     inputs:
@@ -8,7 +20,7 @@ on:
         required: true
         type: choice
         options:
-          - oidc
+          # - oidc
           - s3
           - kms
           - all
@@ -20,10 +32,10 @@ on:
           - dev
           - test
           - prod
-      github_repo:
-        description: 'GitHub Repository (username/repo) for OIDC stack'
-        required: false
-        type: string
+      # github_repo:
+      #   description: 'GitHub Repository (username/repo) for OIDC stack'
+      #   required: false
+      #   type: string
 
 jobs:
   deploy:
@@ -42,23 +54,23 @@ jobs:
           role-to-assume: arn:aws:iam::${{ secrets.ACCOUNT_ID }}:role/GitHubActionsDeployRole
           aws-region: ap-northeast-2
       
-      - name: Deploy OIDC Stack
-        if: github.event.inputs.stack == 'oidc' || github.event.inputs.stack == 'all'
-        run: |
-          GITHUB_REPO="${{ github.event.inputs.github_repo }}"
-          if [ -z "$GITHUB_REPO" ]; then
-            GITHUB_REPO="${{ github.repository }}"
-            echo "ℹ️  Using default GitHub repository: ${GITHUB_REPO}"
-          fi
-          
-          aws cloudformation deploy \
-            --template-file cfn/bootstrap/oidc.yaml \
-            --stack-name bootstrap-oidc \
-            --parameter-overrides GitHubRepo=${GITHUB_REPO} \
-            --capabilities CAPABILITY_NAMED_IAM \
-            --no-fail-on-empty-changeset
-          
-          echo "✅ OIDC Stack deployed/updated"
+      # - name: Deploy OIDC Stack
+      #   if: github.event.inputs.stack == 'oidc' || github.event.inputs.stack == 'all'
+      #   run: |
+      #     GITHUB_REPO="${{ github.event.inputs.github_repo }}"
+      #     if [ -z "$GITHUB_REPO" ]; then
+      #       GITHUB_REPO="${{ github.repository }}"
+      #       echo "ℹ️  Using default GitHub repository: ${GITHUB_REPO}"
+      #     fi
+      #     
+      #     aws cloudformation deploy \
+      #       --template-file cfn/bootstrap/oidc.yaml \
+      #       --stack-name bootstrap-oidc \
+      #       --parameter-overrides GitHubRepo=${GITHUB_REPO} \
+      #       --capabilities CAPABILITY_NAMED_IAM \
+      #       --no-fail-on-empty-changeset
+      #     
+      #     echo "✅ OIDC Stack deployed/updated"
       
       - name: Deploy S3 Stack
         if: github.event.inputs.stack == 's3' || github.event.inputs.stack == 'all'
@@ -100,14 +112,14 @@ jobs:
         run: |
           echo "📊 Bootstrap Stack Outputs:"
           
-          if aws cloudformation describe-stacks --stack-name bootstrap-oidc --region ap-northeast-2 &>/dev/null; then
-            echo "✅ OIDC Stack exists"
-            aws cloudformation describe-stacks \
-              --stack-name bootstrap-oidc \
-              --region ap-northeast-2 \
-              --query 'Stacks[0].Outputs' \
-              --output table
-          fi
+          # if aws cloudformation describe-stacks --stack-name bootstrap-oidc --region ap-northeast-2 &>/dev/null; then
+          #   echo "✅ OIDC Stack exists"
+          #   aws cloudformation describe-stacks \
+          #     --stack-name bootstrap-oidc \
+          #     --region ap-northeast-2 \
+          #     --query 'Stacks[0].Outputs' \
+          #     --output table
+          # fi
           
           for ENV in dev test prod; do
             if aws cloudformation describe-stacks --stack-name bootstrap-s3-${ENV} --region ap-northeast-2 &>/dev/null; then

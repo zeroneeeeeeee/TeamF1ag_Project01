@@ -146,12 +146,6 @@ Resources:
       Description: Allow outbound to ECS tasks
 
 Outputs:
-  KmsKeyId:
-    Description: KMS Key ARN (external, passed as parameter)
-    Value: !Ref KmsKeyArn
-    Export:
-      Name: !Sub ${Env}-KmsKeyId
-
   EcsTaskExecutionRoleArn:
     Value: !GetAtt EcsTaskExecutionRole.Arn
     Export:

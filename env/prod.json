@@ -8,7 +8,7 @@
   "Memory": 2048,
   "DesiredCountStart": 2,
   "DesiredCountStop": 0,
-  "ExistingUploadBucketName": "prod-ctfd-uploads-${ACCOUNT_ID}",
+  "ExistingUploadBucketName": "",
   "UseRedisTLS": "true"
 }
 

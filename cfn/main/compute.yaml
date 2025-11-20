@@ -84,12 +84,14 @@ Resources:
       Protocol: HTTP
       TargetType: ip
       HealthCheckPath: /healthcheck  # CTFd 기본 경로 (필요 시 /health로 변경 가능)
-      HealthCheckIntervalSeconds: 30
-      HealthCheckTimeoutSeconds: 5
-      HealthyThresholdCount: 2
-      UnhealthyThresholdCount: 3
+      # 타겟 그룹 헬스체크 관련 설정
+      HealthCheckIntervalSeconds: 30      # 헬스체크 주기(초) - 30초마다 확인
+      HealthCheckTimeoutSeconds: 5        # 헬스체크 타임아웃(초) - 5초 내 응답 없으면 실패 처리
+      HealthyThresholdCount: 2            # 연속 성공 횟수(2회) 이상이면 healthy로 판정
+      UnhealthyThresholdCount: 3          # 연속 실패 횟수(3회) 이상이면 unhealthy로 판정
       Matcher:
         HttpCode: 200
+      # - deregistration_delay.timeout_seconds: 타겟 인스턴스 교체 시 드레이닝(즉시 중단하지 않고 요청 정리) 대기 시간 (초 단위, 60초)
       TargetGroupAttributes:
         - Key: deregistration_delay.timeout_seconds
           Value: '60'
@@ -142,7 +144,7 @@ Resources:
       DefaultCapacityProviderStrategy:
         - CapacityProvider: FARGATE
           Weight: 1
-      ClusterSettings:
+      ClusterSettings: # 모니터링 on
         - Name: containerInsights
           Value: enabled
       Tags:
@@ -217,15 +219,14 @@ Resources:
               Value: !Ref Env
             - Name: APP_NAME
               Value: !Ref AppName
-          # HealthCheck:
-          #   Command:
-          #     - CMD-SHELL
-          #     - !Sub curl -f http://localhost:${AppPort}/health || exit 1
-          #     # 또는 wget: wget --no-verbose --tries=1 --spider http://localhost:${AppPort}/health || exit 1
-          #   Interval: 30
-          #   Timeout: 5
-          #   Retries: 3
-          #   StartPeriod: 60
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - !Sub python -c "import urllib.request; urllib.request.urlopen('http://localhost:${AppPort}/healthcheck')" || exit 1
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 60
       #Volumes:
       #  - Name: tmp
       #    Host: {}

@@ -95,13 +95,13 @@ Resources:
 Outputs:
   CacheReplicationGroupEndpoint:
     Description: ElastiCache Redis Primary Endpoint Address
-    Value: !GetAtt CacheReplicationGroup.PrimaryEndPoint.Address
+    Value: !GetAtt CacheReplicationGroup.PrimaryEndpoint.Address
     Export:
       Name: !Sub ${Env}-CacheReplicationGroupEndpoint
 
   CacheReplicationGroupPort:
     Description: ElastiCache Redis Port
-    Value: !GetAtt CacheReplicationGroup.PrimaryEndPoint.Port
+    Value: !GetAtt CacheReplicationGroup.PrimaryEndpoint.Port
     Export:
       Name: !Sub ${Env}-CacheReplicationGroupPort
 

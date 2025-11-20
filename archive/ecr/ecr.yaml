@@ -1,0 +1,63 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: ECR Repository for Docker container images
+
+Parameters:
+  Env:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, test, prod]
+    Description: Environment name
+
+  RepositoryName:
+    Type: String
+    Default: teamf1ag-ecr
+    Description: ECR Repository name
+
+Resources:
+  ECRRepository:
+    Type: AWS::ECR::Repository
+    UpdateReplacePolicy: Retain
+    DeletionPolicy: Retain
+    Properties:
+      RepositoryName: !Ref RepositoryName
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      ImageTagMutability: MUTABLE
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep last 10 images",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 10
+                },
+                "action": {
+                  "type": "expire"
+                }
+              }
+            ]
+          }
+
+Outputs:
+  RepositoryUri:
+    Description: ECR Repository URI
+    Value: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${RepositoryName}
+    Export:
+      Name: !Sub ${Env}-ECRRepositoryUri
+
+  RepositoryArn:
+    Description: ECR Repository ARN
+    Value: !GetAtt ECRRepository.Arn
+    Export:
+      Name: !Sub ${Env}-ECRRepositoryArn
+
+  RepositoryName:
+    Description: ECR Repository Name
+    Value: !Ref ECRRepository
+    Export:
+      Name: !Sub ${Env}-ECRRepositoryName
+

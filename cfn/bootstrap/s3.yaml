@@ -1,0 +1,34 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: S3 Bucket for CloudFormation artifacts storage
+
+Parameters:
+  Env:
+    Type: String
+    AllowedValues: [dev, test, prod]
+    Description: Environment name
+
+Resources:
+  ArtifactsBucket:
+    Type: AWS::S3::Bucket
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub my-cfn-artifacts-${Env}-${AWS::AccountId}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+Outputs:
+  ArtifactsBucketName:
+    Description: Artifacts bucket name for this environment
+    Value: !Ref ArtifactsBucket
+    Export:
+      Name: !Sub ${Env}-ArtifactsBucketName
+

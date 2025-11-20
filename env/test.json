@@ -1,0 +1,14 @@
+{
+  "Env": "test",
+  "Region": "ap-northeast-2",
+  "AppName": "ctfd",
+  "AppPort": 8000,
+  "ImageUri": "ghcr.io/ctfd/ctfd:latest",
+  "Cpu": 512,
+  "Memory": 1024,
+  "DesiredCountStart": 2,
+  "DesiredCountStop": 0,
+  "ExistingUploadBucketName": "",
+  "UseRedisTLS": "true"
+}
+

@@ -1,0 +1,130 @@
+name: Deploy Bootstrap Stack
+
+on:
+  workflow_dispatch:
+    inputs:
+      stack:
+        description: 'Bootstrap stack to deploy'
+        required: true
+        type: choice
+        options:
+          - oidc
+          - s3
+          - kms
+          - all
+      env:
+        description: 'Environment (for s3/kms/all)'
+        required: false
+        type: choice
+        options:
+          - dev
+          - test
+          - prod
+      github_repo:
+        description: 'GitHub Repository (username/repo) for OIDC stack'
+        required: false
+        type: string
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v5.1.0
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.ACCOUNT_ID }}:role/GitHubActionsDeployRole
+          aws-region: ap-northeast-2
+      
+      - name: Deploy OIDC Stack
+        if: github.event.inputs.stack == 'oidc' || github.event.inputs.stack == 'all'
+        run: |
+          if [ -z "${{ github.event.inputs.github_repo }}" ]; then
+            echo "❌ Error: github_repo is required for OIDC stack"
+            exit 1
+          fi
+          
+          aws cloudformation deploy \
+            --template-file cfn/bootstrap/oidc.yaml \
+            --stack-name bootstrap-oidc \
+            --parameter-overrides GitHubRepo=${{ github.event.inputs.github_repo }} \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset
+          
+          echo "✅ OIDC Stack deployed/updated"
+      
+      - name: Deploy S3 Stack
+        if: github.event.inputs.stack == 's3' || github.event.inputs.stack == 'all'
+        run: |
+          ENV="${{ github.event.inputs.env || 'dev' }}"
+          
+          if [ -z "$ENV" ]; then
+            echo "❌ Error: env is required for S3 stack"
+            exit 1
+          fi
+          
+          aws cloudformation deploy \
+            --template-file cfn/bootstrap/s3.yaml \
+            --stack-name bootstrap-s3-${ENV} \
+            --parameter-overrides Env=${ENV} \
+            --no-fail-on-empty-changeset
+          
+          echo "✅ S3 Stack deployed for ${ENV}"
+      
+      - name: Deploy KMS Stack
+        if: github.event.inputs.stack == 'kms' || github.event.inputs.stack == 'all'
+        run: |
+          ENV="${{ github.event.inputs.env || 'dev' }}"
+          
+          if [ -z "$ENV" ]; then
+            echo "❌ Error: env is required for KMS stack"
+            exit 1
+          fi
+          
+          aws cloudformation deploy \
+            --template-file cfn/bootstrap/kms.yaml \
+            --stack-name bootstrap-kms-${ENV} \
+            --parameter-overrides Env=${ENV} \
+            --no-fail-on-empty-changeset
+          
+          echo "✅ KMS Stack deployed for ${ENV}"
+      
+      - name: Get Stack Outputs
+        run: |
+          echo "📊 Bootstrap Stack Outputs:"
+          
+          if aws cloudformation describe-stacks --stack-name bootstrap-oidc --region ap-northeast-2 &>/dev/null; then
+            echo "✅ OIDC Stack exists"
+            aws cloudformation describe-stacks \
+              --stack-name bootstrap-oidc \
+              --region ap-northeast-2 \
+              --query 'Stacks[0].Outputs' \
+              --output table
+          fi
+          
+          for ENV in dev test prod; do
+            if aws cloudformation describe-stacks --stack-name bootstrap-s3-${ENV} --region ap-northeast-2 &>/dev/null; then
+              echo "✅ S3 Stack exists for ${ENV}"
+              aws cloudformation describe-stacks \
+                --stack-name bootstrap-s3-${ENV} \
+                --region ap-northeast-2 \
+                --query 'Stacks[0].Outputs' \
+                --output table
+            fi
+            
+            if aws cloudformation describe-stacks --stack-name bootstrap-kms-${ENV} --region ap-northeast-2 &>/dev/null; then
+              echo "✅ KMS Stack exists for ${ENV}"
+              aws cloudformation describe-stacks \
+                --stack-name bootstrap-kms-${ENV} \
+                --region ap-northeast-2 \
+                --query 'Stacks[0].Outputs' \
+                --output table
+            fi
+          done
+

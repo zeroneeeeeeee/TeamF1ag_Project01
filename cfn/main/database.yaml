@@ -1,0 +1,176 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >
+  RDS MySQL Database for CTFd application - Secure deployment with encryption and private subnet.
+
+Parameters:
+  Env:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, test, prod]
+    Description: Environment name
+
+  KmsKeyArn:
+    Type: String
+    Description: KMS Key ARN for RDS encryption (pre-created externally)
+
+  DBUsername:
+    Type: String
+    Default: ctfdadmin
+    NoEcho: true
+    Description: Master username for RDS MySQL database
+    MinLength: 1
+    MaxLength: 16
+
+  DBPassword:
+    Type: String
+    NoEcho: true
+    Description: Master password for RDS MySQL database
+    MinLength: 8
+    MaxLength: 41
+
+Conditions:
+  IsProduction: !Equals [!Ref Env, prod]
+
+Resources:
+  # DB Subnet Group
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupName: !Sub ${Env}-ctfd-db-subnet-group
+      DBSubnetGroupDescription: !Sub DB Subnet Group for ${Env} CTFd MySQL
+      SubnetIds:
+        - !ImportValue
+          Fn::Sub: '${Env}-PrivateSubnet1Id'
+        - !ImportValue
+          Fn::Sub: '${Env}-PrivateSubnet2Id'
+      Tags:
+        - Key: Name
+          Value: !Sub ${Env}-ctfd-db-subnet-group
+        - Key: Environment
+          Value: !Ref Env
+
+  # DB Security Group
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub RDS MySQL security group for ${Env} CTFd
+      VpcId: !ImportValue
+        Fn::Sub: '${Env}-VpcId'
+      GroupName: !Sub ${Env}-rds-sg
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !ImportValue
+            Fn::Sub: '${Env}-EcsSecurityGroupId'
+          Description: Allow MySQL access from ECS tasks
+      Tags:
+        - Key: Name
+          Value: !Sub ${Env}-rds-sg
+        - Key: Environment
+          Value: !Ref Env
+
+  # DB Parameter Group (선택 - MySQL 최적화)
+  DBParameterGroup:
+    Type: AWS::RDS::DBParameterGroup
+    Properties:
+      Family: mysql8.0
+      Description: !Sub Parameter group for ${Env} CTFd MySQL
+      Parameters:
+        # JSON 데이터 타입 지원 (CTFd 필수)
+        sql_mode: "STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION"
+        # 성능 최적화
+        # innodb_buffer_pool_size: "{DBInstanceClassMemory*3/4}"
+        # time_zone: "UTC"
+        # character_set_server: "utf8mb4" # 뭔가 글자 꺠지면
+        # collation_server: "utf8mb4_0900_ai_ci"
+      Tags:
+        - Key: Name
+          Value: !Sub ${Env}-ctfd-db-params
+        - Key: Environment
+          Value: !Ref Env
+
+  # RDS MySQL Instance
+  DBInstance:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot  # 스택 삭제 시 스냅샷 보존
+    Properties:
+      DBInstanceIdentifier: !Sub ${Env}-ctfd-db
+      Engine: mysql
+      EngineVersion: "8.0.43"  # 최신 안정 버전
+      DBInstanceClass: "db.t4g.micro" # 난 프리티어니까,,
+      #DBInstanceClass: !If
+      #  - IsProduction
+      #  - db.t3.small  # Prod: 2 vCPU, 2GB RAM
+      #  - db.t3.micro  # Dev: 2 vCPU, 1GB RAM
+      MasterUsername: !Ref DBUsername
+      MasterUserPassword: !Ref DBPassword
+      AllocatedStorage: !If
+        - IsProduction
+        - 40  # Prod: 40GB
+        - 20   # Dev: 20GB
+      MaxAllocatedStorage: 30
+      StorageType: gp3
+      StorageEncrypted: true
+      KmsKeyId: !Ref KmsKeyArn
+      DBName: ctfd
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups:
+        - !Ref DBSecurityGroup
+      DBParameterGroupName: !Ref DBParameterGroup
+      BackupRetentionPeriod: !If
+        - IsProduction
+        - 7   # Prod: 7일
+        - 1   # Dev: 1일
+      PreferredBackupWindow: "03:00-04:00"  # UTC 시간, 매일 백업 시간 12-13
+      PreferredMaintenanceWindow: "sun:04:00-sun:05:00"  # UTC 시간, 유지보수 시간 13-14
+      MultiAZ: !If
+        - IsProduction
+        - true   # Prod: Multi-AZ (고가용성)
+        - false  # Dev: Single-AZ (비용 절감)
+      PubliclyAccessible: false  # Private Subnet에만 배치
+      #DeletionProtection: !If
+      #  - IsProduction
+      #  - true   # Prod: 삭제 보호
+      #  - false  # Dev: 삭제 가능, 기본
+      #EnablePerformanceInsights: !If
+      #  - IsProduction
+      #  - true   # Prod: 성능 인사이트 활성화
+      #  - false  # Dev: 비활성화 (비용 절감)
+      #PerformanceInsightsRetentionPeriod: !If
+      #  - IsProduction
+      #  - 7   # Prod: 7일
+      #  - 7   # Dev: 7일 (활성화 시)
+      Tags:
+        - Key: Name
+          Value: !Sub ${Env}-ctfd-db
+        - Key: Environment
+          Value: !Ref Env
+        - Key: Application
+          Value: CTFd
+
+Outputs:
+  DBInstanceEndpoint:
+    Description: RDS MySQL Endpoint Address
+    Value: !GetAtt DBInstance.Endpoint.Address
+    Export:
+      Name: !Sub ${Env}-DBInstanceEndpoint
+
+  DBInstancePort:
+    Description: RDS MySQL Port
+    Value: !GetAtt DBInstance.Endpoint.Port
+    Export:
+      Name: !Sub ${Env}-DBInstancePort
+
+  DBInstanceId:
+    Description: RDS MySQL Instance ID
+    Value: !Ref DBInstance
+    Export:
+      Name: !Sub ${Env}-DBInstanceId
+
+  DBSecurityGroupId:
+    Description: RDS Security Group ID
+    Value: !Ref DBSecurityGroup
+    Export:
+      Name: !Sub ${Env}-DBSecurityGroupId
+

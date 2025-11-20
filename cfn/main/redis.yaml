@@ -1,0 +1,119 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >
+  ElastiCache Redis for CTFd application - Session and caching with encryption.
+
+Parameters:
+  Env:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, test, prod]
+    Description: Environment name
+
+Conditions:
+  IsProduction: !Equals [!Ref Env, prod] # prod: true, test/dev: false
+
+Resources:
+  # Cache Subnet Group
+  CacheSubnetGroup:
+    Type: AWS::ElastiCache::SubnetGroup
+    Properties:
+      Description: !Sub Cache Subnet Group for ${Env} CTFd Redis
+      SubnetIds:
+        - !ImportValue
+          Fn::Sub: '${Env}-PrivateSubnet1Id'
+        - !ImportValue
+          Fn::Sub: '${Env}-PrivateSubnet2Id'
+      Tags:
+        - Key: Name
+          Value: !Sub ${Env}-cache-subnet-group
+        - Key: Environment
+          Value: !Ref Env
+
+  # Cache Security Group
+  CacheSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub ElastiCache Redis security group for ${Env} CTFd
+      VpcId: !ImportValue
+        Fn::Sub: '${Env}-VpcId'
+      GroupName: !Sub ${Env}-redis-sg
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 6379
+          ToPort: 6379
+          SourceSecurityGroupId: !ImportValue
+            Fn::Sub: '${Env}-EcsSecurityGroupId'
+          Description: Allow Redis access from ECS tasks
+      Tags:
+        - Key: Name
+          Value: !Sub ${Env}-redis-sg
+        - Key: Environment
+          Value: !Ref Env
+
+  # ElastiCache Redis Replication Group
+  CacheReplicationGroup:
+    Type: AWS::ElastiCache::ReplicationGroup
+    Properties:
+      ReplicationGroupId: !Sub ${Env}-ctfd-redis
+      ReplicationGroupDescription: !Sub Redis Replication Group for ${Env} CTFd
+      Engine: redis
+      EngineVersion: "7.0"
+      CacheNodeType: !If
+        - IsProduction
+        - cache.t3.small  # Prod: 2.09 GB RAM
+        - cache.t3.micro  # Test/Dev: 0.5 GB RAM
+      NumCacheClusters: !If
+        - IsProduction
+        - 2   # Prod: 2개 노드 (고가용성)
+        - 1   # Test/Dev: 1개 노드 (비용 절감)
+      AutomaticFailoverEnabled: !If
+        - IsProduction
+        - true   # Prod: 자동 장애 조치
+        - false  # Test/Dev: 비활성화
+      MultiAZEnabled: !If
+        - IsProduction
+        - true   # Prod: Multi-AZ
+        - false  # Test/Dev: Single-AZ
+      CacheSubnetGroupName: !Ref CacheSubnetGroup
+      SecurityGroupIds:
+        - !Ref CacheSecurityGroup
+      AtRestEncryptionEnabled: true   # 저장 데이터 암호화
+      TransitEncryptionEnabled: true  # 전송 중 암호화
+      SnapshotRetentionLimit: !If
+        - IsProduction
+        - 5   # Prod: 5일
+        - 1   # Test/Dev: 1일
+      PreferredMaintenanceWindow: "sun:05:00-sun:06:00"  # UTC 시간
+      Tags:
+        - Key: Name
+          Value: !Sub ${Env}-ctfd-redis
+        - Key: Environment
+          Value: !Ref Env
+        - Key: Application
+          Value: CTFd
+
+Outputs:
+  CacheReplicationGroupEndpoint:
+    Description: ElastiCache Redis Primary Endpoint Address
+    Value: !GetAtt CacheReplicationGroup.PrimaryEndPoint.Address
+    Export:
+      Name: !Sub ${Env}-CacheReplicationGroupEndpoint
+
+  CacheReplicationGroupPort:
+    Description: ElastiCache Redis Port
+    Value: !GetAtt CacheReplicationGroup.PrimaryEndPoint.Port
+    Export:
+      Name: !Sub ${Env}-CacheReplicationGroupPort
+
+  CacheReplicationGroupId:
+    Description: ElastiCache Redis Replication Group ID
+    Value: !Ref CacheReplicationGroup
+    Export:
+      Name: !Sub ${Env}-CacheReplicationGroupId
+
+  CacheSecurityGroupId:
+    Description: Redis Security Group ID
+    Value: !Ref CacheSecurityGroup
+    Export:
+      Name: !Sub ${Env}-CacheSecurityGroupId
+

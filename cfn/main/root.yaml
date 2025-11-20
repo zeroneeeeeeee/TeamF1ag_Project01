@@ -1,0 +1,192 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Root stack orchestrating network, security, database, redis, storage, secrets, compute stacks for CTFd
+
+Parameters:
+  Env:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, test, prod]
+    Description: Environment name
+
+  KmsKeyArn:
+    Type: String
+    Description: KMS Key ARN for CloudWatch Logs encryption (pre-created)
+
+  ImageUri:
+    Type: String
+    Description: Docker image URI (e.g., ghcr.io/ctfd/ctfd:latest)
+    #Default: ghcr.io/ctfd/ctfd:latest
+
+  # ACM 인증서 (선택)
+  AcmCertificateArn:
+    Type: String
+    Default: ""
+    Description: ACM Certificate ARN (optional for dev, required for prod)
+
+  # 애플리케이션 설정 (CTFd 기본값)
+  AppName:
+    Type: String
+    Default: ctfd
+    Description: Application name (CTFd)
+  
+  AppPort:
+    Type: Number
+    Default: 8000
+    Description: "Application container port (CTFd default: 8000)"
+
+  DesiredCount:
+    Type: Number
+    Default: 2
+    Description: "Desired number of ECS tasks (0 to stop, 2 to run)"
+
+  Cpu:
+    Type: Number
+    Default: 512
+    Description: "CPU units (512 = 0.5 vCPU, 1024 = 1 vCPU) - CTFd minimum: 512"
+
+  Memory:
+    Type: Number
+    Default: 1024
+    Description: "Memory in MB (CTFd minimum: 1024)"
+
+  # Database 설정
+  DBUsername:
+    Type: String
+    Default: ctfdadmin
+    NoEcho: true
+    Description: Master username for RDS MySQL database
+
+  DBPassword:
+    Type: String
+    NoEcho: true
+    Description: Master password for RDS MySQL database
+
+  # Secrets 설정
+  SecretKey:
+    Type: String
+    NoEcho: true
+    Description: CTFd SECRET_KEY (generated via openssl rand -hex 32)
+
+  UseRedisTLS:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: Use TLS for Redis connection (rediss:// vs redis://)
+
+  ExistingUploadBucketName:
+    Type: String
+    Default: ""
+    Description: (Optional) Existing S3 bucket name to reuse for CTFd uploads. Leave empty to create a new bucket.
+
+Resources:
+  # Network Stack
+  NetworkStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: network.yaml
+      Parameters:
+        Env: !Ref Env
+
+  # Security Stack
+  SecurityStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: NetworkStack
+    Properties:
+      TemplateURL: security.yaml
+      Parameters:
+        Env: !Ref Env
+        AppPort: !Ref AppPort
+        KmsKeyArn: !Ref KmsKeyArn
+
+  # Database Stack
+  DatabaseStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: SecurityStack
+    Properties:
+      TemplateURL: database.yaml
+      Parameters:
+        Env: !Ref Env
+        KmsKeyArn: !Ref KmsKeyArn
+        DBUsername: !Ref DBUsername
+        DBPassword: !Ref DBPassword
+
+  # Redis Stack
+  RedisStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: SecurityStack
+    Properties:
+      TemplateURL: redis.yaml
+      Parameters:
+        Env: !Ref Env
+
+  # Storage Stack
+  StorageStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: SecurityStack
+    Properties:
+      TemplateURL: storage.yaml
+      Parameters:
+        Env: !Ref Env
+        ExistingBucketName: !Ref ExistingUploadBucketName
+
+  # Secrets Stack (Database, Redis, Storage Stack의 Output 사용)
+  SecretsStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn:
+      - DatabaseStack
+      - RedisStack
+      - StorageStack
+    Properties:
+      TemplateURL: secrets.yaml
+      Parameters:
+        Env: !Ref Env
+        KmsKeyArn: !Ref KmsKeyArn
+        SecretKey: !Ref SecretKey
+        DBUsername: !Ref DBUsername
+        DBPassword: !Ref DBPassword
+        DBEndpoint: !GetAtt DatabaseStack.Outputs.DBInstanceEndpoint
+        RedisEndpoint: !GetAtt RedisStack.Outputs.CacheReplicationGroupEndpoint
+        S3BucketName: !GetAtt StorageStack.Outputs.CTFdUploadBucketName
+        UseRedisTLS: !Ref UseRedisTLS
+
+  # Compute Stack (Secrets Stack의 Output 사용)
+  ComputeStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: SecretsStack
+    Properties:
+      TemplateURL: compute.yaml
+      Parameters:
+        Env: !Ref Env
+        ImageUri: !Ref ImageUri
+        AcmCertificateArn: !Ref AcmCertificateArn
+        AppName: !Ref AppName
+        AppPort: !Ref AppPort
+        DesiredCount: !Ref DesiredCount
+        Cpu: !Ref Cpu
+        Memory: !Ref Memory
+        CTFdSecretArn: !GetAtt SecretsStack.Outputs.CTFdSecretArn
+
+Outputs:
+  VpcId:
+    Value: !GetAtt NetworkStack.Outputs.VpcId
+  
+  AlbDnsName:
+    Value: !GetAtt ComputeStack.Outputs.AlbDnsName
+  
+  ClusterName:
+    Value: !GetAtt ComputeStack.Outputs.ClusterName
+  
+  ServiceName:
+    Value: !GetAtt ComputeStack.Outputs.ServiceName
+
+  DBInstanceEndpoint:
+    Value: !GetAtt DatabaseStack.Outputs.DBInstanceEndpoint
+    Description: RDS MySQL Endpoint Address
+
+  CacheReplicationGroupEndpoint:
+    Value: !GetAtt RedisStack.Outputs.CacheReplicationGroupEndpoint
+    Description: ElastiCache Redis Endpoint Address
+
+  CTFdUploadBucketName:
+    Value: !GetAtt StorageStack.Outputs.CTFdUploadBucketName
+    Description: S3 Bucket Name for CTFd Uploads

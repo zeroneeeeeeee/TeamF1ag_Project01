@@ -1,0 +1,354 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >
+  ALB + Single ECS Service for Secure Cloud Infra Automation.
+
+Parameters:
+  Env:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, test, prod]
+    Description: Environment name
+
+  ImageUri:
+    Type: String
+    Description: Docker image URI (e.g., ghcr.io/ctfd/ctfd:latest or 123456789012.dkr.ecr.us-east-1.amazonaws.com/myrepo:latest)
+
+  AcmCertificateArn:
+    Type: String
+    Default: ""
+    Description: ACM Certificate ARN for HTTPS listener (optional for dev)
+
+  AppName:
+    Type: String
+    Default: ctfd
+    Description: Application name (CTFd)
+
+  AppPort:
+    Type: Number
+    Default: 8000
+    Description: "Application container port (CTFd default: 8000)"
+
+  DesiredCount:
+    Type: Number
+    Default: 2
+    Description: Desired number of ECS tasks
+
+  Cpu:
+    Type: Number
+    Default: 512
+    Description: "CPU units for ECS tasks (512 = 0.5 vCPU, 1024 = 1 vCPU) - CTFd minimum: 512"
+
+  Memory:
+    Type: Number
+    Default: 1024
+    Description: "Memory in MB for ECS tasks (CTFd minimum: 1024)"
+
+  CTFdSecretArn:
+    Type: String
+    Description: CTFd Secrets Manager Secret ARN (from Secrets Stack Output)
+
+Conditions:
+  HasCertificate: !Not [!Equals [!Ref AcmCertificateArn, '']]
+
+Resources:
+  # Application Load Balancer
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub ${Env}-alb
+      Scheme: internet-facing
+      Type: application
+      IpAddressType: ipv4
+      Subnets:
+        - !ImportValue
+          Fn::Sub: '${Env}-PublicSubnet1Id'
+        - !ImportValue
+          Fn::Sub: '${Env}-PublicSubnet2Id'
+      SecurityGroups:
+        - !ImportValue
+          Fn::Sub: '${Env}-AlbSecurityGroupId'
+      Tags:
+        - Key: Name
+          Value: !Sub ${Env}-alb
+        - Key: Environment
+          Value: !Ref Env
+
+  # Target Group
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub ${Env}-${AppName}-tg
+      VpcId: !ImportValue
+        Fn::Sub: '${Env}-VpcId'
+      Port: !Ref AppPort
+      Protocol: HTTP
+      TargetType: ip
+      HealthCheckPath: /healthcheck  # CTFd 기본 경로 (필요 시 /health로 변경 가능)
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: 200
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '60'
+      Tags:
+        - Key: Name
+          Value: !Sub ${Env}-${AppName}-tg
+        - Key: Environment
+          Value: !Ref Env
+
+  # Listeners
+  HttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - !If
+          - HasCertificate
+          - Type: redirect
+            RedirectConfig:
+              Protocol: HTTPS
+              Port: '443'
+              StatusCode: HTTP_301
+          - Type: forward
+            TargetGroupArn: !Ref TargetGroup
+
+  HttpsListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: HasCertificate
+    Properties:
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 443
+      Protocol: HTTPS
+      Certificates:
+        - CertificateArn: !Ref AcmCertificateArn
+      SslPolicy: ELBSecurityPolicy-TLS13-1-2-2021-06
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  # ECS Cluster
+  EcsCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub ${Env}-cluster
+      CapacityProviders:
+        - FARGATE
+        - FARGATE_SPOT
+      DefaultCapacityProviderStrategy:
+        - CapacityProvider: FARGATE
+          Weight: 1
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled
+      Tags:
+        - Key: Name
+          Value: !Sub ${Env}-cluster
+        - Key: Environment
+          Value: !Ref Env
+
+  # CloudWatch Log Group
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /ecs/${Env}/${AppName}
+      RetentionInDays: 7
+      KmsKeyId: !ImportValue
+        Fn::Sub: '${Env}-KmsKeyId'
+      Tags:
+        - Key: Name
+          Value: !Sub /ecs/${Env}/${AppName}
+        - Key: Environment
+          Value: !Ref Env
+
+  # ECS Task Definition
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub ${Env}-${AppName}-task
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: !Ref Cpu
+      Memory: !Ref Memory
+      ExecutionRoleArn: !ImportValue
+        Fn::Sub: '${Env}-EcsTaskExecutionRoleArn'
+      TaskRoleArn: !ImportValue
+        Fn::Sub: '${Env}-EcsTaskRoleArn'
+      ContainerDefinitions:
+        - Name: !Ref AppName
+          Image: !Ref ImageUri
+          Essential: true
+          ReadonlyRootFilesystem: true
+          PortMappings:
+            - ContainerPort: !Ref AppPort
+              Protocol: tcp
+          #MountPoints:
+          #  - SourceVolume: tmp
+          #    ContainerPath: /tmp
+          #    ReadOnly: false
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ctfd  # CTFd 로그 식별
+          # Secrets from Secrets Manager (CTFd 필수)
+          Secrets:
+            - Name: SECRET_KEY
+              ValueFrom: !Sub '${CTFdSecretArn}:SECRET_KEY::'
+            - Name: DATABASE_URL
+              ValueFrom: !Sub '${CTFdSecretArn}:DATABASE_URL::'
+            - Name: REDIS_URL
+              ValueFrom: !Sub '${CTFdSecretArn}:REDIS_URL::'
+            - Name: AWS_S3_BUCKET
+              ValueFrom: !Sub '${CTFdSecretArn}:AWS_S3_BUCKET::'
+            - Name: REVERSE_PROXY
+              ValueFrom: !Sub '${CTFdSecretArn}:REVERSE_PROXY::'
+            - Name: UPLOAD_PROVIDER
+              ValueFrom: !Sub '${CTFdSecretArn}:UPLOAD_PROVIDER::'
+          # Environment Variables (선택 - Secrets 외 추가 변수)
+          Environment:
+            - Name: ENVIRONMENT
+              Value: !Ref Env
+            - Name: APP_NAME
+              Value: !Ref AppName
+          # HealthCheck:
+          #   Command:
+          #     - CMD-SHELL
+          #     - !Sub curl -f http://localhost:${AppPort}/health || exit 1
+          #     # 또는 wget: wget --no-verbose --tries=1 --spider http://localhost:${AppPort}/health || exit 1
+          #   Interval: 30
+          #   Timeout: 5
+          #   Retries: 3
+          #   StartPeriod: 60
+      #Volumes:
+      #  - Name: tmp
+      #    Host: {}
+
+  # ECS Service
+  EcsService:
+    Type: AWS::ECS::Service
+    DependsOn:
+      - HttpListener
+    Properties:
+      ServiceName: !Sub ${Env}-${AppName}-service
+      Cluster: !Ref EcsCluster
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: !Ref DesiredCount
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets:
+            - !ImportValue
+              Fn::Sub: '${Env}-PrivateSubnet1Id'
+            - !ImportValue
+              Fn::Sub: '${Env}-PrivateSubnet2Id'
+          SecurityGroups:
+            - !ImportValue
+              Fn::Sub: '${Env}-EcsSecurityGroupId'
+          AssignPublicIp: DISABLED
+      LoadBalancers:
+        - ContainerName: !Ref AppName
+          ContainerPort: !Ref AppPort
+          TargetGroupArn: !Ref TargetGroup
+      HealthCheckGracePeriodSeconds: 60
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${Env}-${AppName}-service
+        - Key: Environment
+          Value: !Ref Env
+
+  # ECS Service Auto Scaling (옵션 - 나중에 필요하면 주석 해제)
+  #
+  # 목적: 트래픽 증가 시 자동으로 태스크 수 증가 (DDoS, 트래픽 몰림 대응)
+  # 비용: MaxCapacity에 따라 비용 증가 (태스크 수 × 시간당 요금)
+  # 
+  # 사용 시나리오:
+  # - 트래픽 패턴이 예측 불가능한 경우
+  # - DDoS 공격 대응 필요 시
+  # - 이벤트 등으로 갑자기 사용자가 몰릴 때
+  #
+  # ⚠️ 주의사항:
+  # - RDS/Redis 연결 풀 확인 필요 (태스크 증가 시 연결 수 증가)
+  # - MaxCapacity 설정 시 비용 고려 (초기값: 5-10 권장)
+  # - CloudWatch Alarms와 함께 사용 권장 (비정상 트래픽 감지)
+  #
+  # EcsServiceAutoScaling:
+  #   Type: AWS::ApplicationAutoScaling::ScalableTarget
+  #   Properties:
+  #     MinCapacity: 2  # 최소 태스크 수 (기본 DesiredCount와 동일 권장)
+  #     MaxCapacity: 10  # 최대 태스크 수 (DDoS 대응용, 비용 고려하여 설정)
+  #     ResourceId: !Sub service/${EcsCluster}/${EcsService.Name}
+  #     ScalableDimension: ecs:service:DesiredCount
+  #     ServiceNamespace: ecs
+  #
+  # EcsServiceScalingPolicy:
+  #   Type: AWS::ApplicationAutoScaling::ScalingPolicy
+  #   Properties:
+  #     PolicyName: !Sub ${Env}-${AppName}-target-tracking
+  #     PolicyType: TargetTrackingScaling
+  #     ScalingTargetId: !Ref EcsServiceAutoScaling
+  #     TargetTrackingScalingPolicyConfiguration:
+  #       TargetValue: 70.0  # CPU 사용률 70% 타겟 (필요 시 조정)
+  #       PredefinedMetricSpecification:
+  #         PredefinedMetricType: ECSServiceAverageCPUUtilization
+  #       ScaleInCooldown: 300  # 스케일 인 쿨다운 (5분) - 안정성 위해 길게 설정
+  #       ScaleOutCooldown: 60   # 스케일 아웃 쿨다운 (1분) - 빠른 대응
+  #
+  # # 추가 옵션: ALB RequestCountPerTarget 메트릭 사용 (트래픽 기반 스케일링)
+  # # EcsServiceRequestScalingPolicy:
+  # #   Type: AWS::ApplicationAutoScaling::ScalingPolicy
+  # #   Properties:
+  # #     PolicyName: !Sub ${Env}-${AppName}-request-tracking
+  # #     PolicyType: TargetTrackingScaling
+  # #     ScalingTargetId: !Ref EcsServiceAutoScaling
+  # #     TargetTrackingScalingPolicyConfiguration:
+  # #       TargetValue: 1000.0  # 타겟당 1분당 1000 요청 타겟
+  # #       PredefinedMetricSpecification:
+  # #         PredefinedMetricType: ALBRequestCountPerTarget
+  # #         ResourceLabel: !Sub ${ApplicationLoadBalancer.FullName}/${TargetGroup.FullName}
+  # #       ScaleInCooldown: 300
+  # #       ScaleOutCooldown: 60
+
+Outputs:
+  AlbDnsName:
+    Description: ALB DNS Name
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
+    Export:
+      Name: !Sub ${Env}-AlbDnsName
+
+  AlbArn:
+    Description: ALB ARN
+    Value: !Ref ApplicationLoadBalancer
+    Export:
+      Name: !Sub ${Env}-AlbArn
+
+  ClusterName:
+    Description: ECS Cluster Name
+    Value: !Ref EcsCluster
+    Export:
+      Name: !Sub ${Env}-ClusterName
+
+  ServiceName:
+    Description: ECS Service Name
+    Value: !GetAtt EcsService.Name
+    Export:
+      Name: !Sub ${Env}-ServiceName
+
+  TargetGroupArn:
+    Description: Target Group ARN
+    Value: !Ref TargetGroup
+    Export:
+      Name: !Sub ${Env}-TargetGroupArn
+

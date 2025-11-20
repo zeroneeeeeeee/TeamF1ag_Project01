@@ -1,0 +1,258 @@
+name: Deploy CloudFormation Stack
+
+on:
+  push:
+    branches: [dev, test, prod]
+    paths:
+      - 'cfn/main/**'
+      - 'env/**'
+  
+  workflow_dispatch:
+    inputs:
+      env:
+        description: 'Environment'
+        required: true
+        type: choice
+        options:
+          - dev
+          - test
+          - prod
+      action:
+        description: 'Task action'
+        required: true
+        type: choice
+        options:
+          - start
+          - stop
+          - delete
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      
+      - name: Determine Environment
+        id: env
+        run: |
+          if [ -n "${{ github.event.inputs.env }}" ]; then
+            ENV="${{ github.event.inputs.env }}"
+          else
+            ENV="${{ github.ref_name }}"
+          fi
+          echo "env=${ENV}" >> $GITHUB_OUTPUT
+          echo "ENV=${ENV}" >> $GITHUB_ENV
+          echo "📋 Environment: ${ENV}"
+      
+      - name: Load env/ file and set environment variables
+        id: config
+        run: |
+          ENV="${{ steps.env.outputs.env }}"
+          ENV_FILE="env/${ENV}.json"
+          
+          if [ ! -f "$ENV_FILE" ]; then
+            echo "❌ Error: ${ENV_FILE} not found"
+            exit 1
+          fi
+          
+          echo "AWS_REGION=$(jq -r '.Region // "ap-northeast-2"' $ENV_FILE)" >> $GITHUB_ENV
+          echo "STACK_NAME=${ENV}-root" >> $GITHUB_ENV
+          echo "ENV=${ENV}" >> $GITHUB_ENV
+          echo "APP_NAME=$(jq -r '.AppName // "ctfd"' $ENV_FILE)" >> $GITHUB_ENV
+          echo "APP_PORT=$(jq -r '.AppPort // 8000' $ENV_FILE)" >> $GITHUB_ENV
+          echo "IMAGE_URI=$(jq -r '.ImageUri // "ghcr.io/ctfd/ctfd:latest"' $ENV_FILE)" >> $GITHUB_ENV
+          echo "CPU=$(jq -r '.Cpu // 512' $ENV_FILE)" >> $GITHUB_ENV
+          echo "MEMORY=$(jq -r '.Memory // 1024' $ENV_FILE)" >> $GITHUB_ENV
+          echo "DESIRED_COUNT_START=$(jq -r '.DesiredCountStart // 2' $ENV_FILE)" >> $GITHUB_ENV
+          echo "DESIRED_COUNT_STOP=$(jq -r '.DesiredCountStop // 0' $ENV_FILE)" >> $GITHUB_ENV
+          echo "USE_REDIS_TLS=$(jq -r '.UseRedisTLS // "true"' $ENV_FILE)" >> $GITHUB_ENV
+
+          ACCOUNT_ID="${{ secrets.ACCOUNT_ID }}"
+          echo "ACCOUNT_ID=${ACCOUNT_ID}" >> $GITHUB_ENV
+
+          EXISTING_UPLOAD_BUCKET_NAME=$(jq -r '.ExistingUploadBucketName // ""' $ENV_FILE)
+          if [ -n "$EXISTING_UPLOAD_BUCKET_NAME" ]; then
+            EXISTING_UPLOAD_BUCKET_NAME=${EXISTING_UPLOAD_BUCKET_NAME//\$\{ACCOUNT_ID\}/$ACCOUNT_ID}
+          fi
+          echo "EXISTING_UPLOAD_BUCKET_NAME=${EXISTING_UPLOAD_BUCKET_NAME}" >> $GITHUB_ENV
+          
+          echo "✅ Loaded config from ${ENV_FILE}"
+          echo "   REGION: ${{ env.AWS_REGION }}"
+          echo "   ENV: ${ENV}"
+          echo "   STACK_NAME: ${{ env.STACK_NAME }}"
+          echo "   APP_NAME: ${{ env.APP_NAME }}"
+          echo "   APP_PORT: ${{ env.APP_PORT }}"
+          echo "   DESIRED_COUNT_START: ${{ env.DESIRED_COUNT_START }}"
+          echo "   DESIRED_COUNT_STOP: ${{ env.DESIRED_COUNT_STOP }}"
+      
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v5.1.0
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.ACCOUNT_ID }}:role/GitHubActionsDeployRole
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Delete CloudFormation Stack
+        if: github.event.inputs.action == 'delete'
+        run: |
+          echo "🗑️ Deleting stack: ${{ env.STACK_NAME }}"
+          aws cloudformation delete-stack \
+            --stack-name ${{ env.STACK_NAME }} \
+            --region ${{ env.AWS_REGION }}
+          
+          echo "⏳ Waiting for stack deletion..."
+          aws cloudformation wait stack-delete-complete \
+            --stack-name ${{ env.STACK_NAME }} \
+            --region ${{ env.AWS_REGION }}
+          
+          echo "✅ Stack deleted successfully"
+      
+      - name: Get Bootstrap Stack Outputs
+        if: github.event.inputs.action != 'delete'
+        id: bootstrap
+        run: |
+          ENV="${{ env.ENV }}"
+          
+          S3_BUCKET=$(aws cloudformation describe-stacks \
+            --stack-name bootstrap-s3-${ENV} \
+            --region ${{ env.AWS_REGION }} \
+            --query 'Stacks[0].Outputs[?OutputKey==`ArtifactsBucketName`].OutputValue' \
+            --output text 2>/dev/null || echo "")
+          
+          if [ -z "$S3_BUCKET" ]; then
+            echo "⚠️  Warning: Bootstrap S3 Stack not found. Using default naming."
+            ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+            S3_BUCKET="my-cfn-artifacts-${ENV}-${ACCOUNT_ID}"
+          fi
+          
+          KMS_KEY_ARN=$(aws cloudformation describe-stacks \
+            --stack-name bootstrap-kms-${ENV} \
+            --region ${{ env.AWS_REGION }} \
+            --query 'Stacks[0].Outputs[?OutputKey==`KmsKeyArn`].OutputValue' \
+            --output text 2>/dev/null || echo "")
+          
+          if [ -z "$KMS_KEY_ARN" ]; then
+            echo "⚠️  Warning: Bootstrap KMS Stack not found. Using alias lookup."
+            KMS_KEY_ARN=$(aws kms describe-key \
+              --key-id alias/${ENV}-infra \
+              --region ${{ env.AWS_REGION }} \
+              --query 'KeyMetadata.Arn' \
+              --output text 2>/dev/null || echo "")
+          fi
+          
+          if [ -z "$KMS_KEY_ARN" ]; then
+            echo "❌ Error: KMS Key not found. Please deploy Bootstrap Stack first."
+            exit 1
+          fi
+          
+          echo "s3_bucket=${S3_BUCKET}" >> $GITHUB_OUTPUT
+          echo "kms_key_arn=${KMS_KEY_ARN}" >> $GITHUB_OUTPUT
+          
+          echo "📋 Bootstrap Stack Outputs:"
+          echo "   S3 Bucket: ${S3_BUCKET}"
+          echo "   KMS Key ARN: ${KMS_KEY_ARN}"
+      
+      - name: Generate Parameters from env/ file
+        if: github.event.inputs.action != 'delete'
+        id: params
+        run: |
+          if [ "${{ github.event.inputs.action }}" = "stop" ]; then
+            DESIRED_COUNT="${{ env.DESIRED_COUNT_STOP }}"
+            ACTION="STOP"
+          else
+            DESIRED_COUNT="${{ env.DESIRED_COUNT_START }}"
+            ACTION="START"
+          fi
+          
+          SECRET_KEY="${{ secrets.CTFD_SECRET_KEY }}"
+          if [ -z "$SECRET_KEY" ]; then
+            SECRET_KEY=$(openssl rand -hex 32)
+            echo "⚠️  Generated new SECRET_KEY (not from GitHub Secrets)"
+          fi
+          
+          # DB 자격증명 (GitHub Secrets에서 가져오기 - 환경별 분리) ⭐
+          ENV="${{ env.ENV }}"
+          DB_USERNAME="${{ secrets.DB_USERNAME }}"
+          
+          # 환경별 DB 비밀번호 선택
+          if [ "$ENV" = "dev" ]; then
+            DB_PASSWORD="${{ secrets.DB_PASSWORD_DEV }}"
+          elif [ "$ENV" = "test" ]; then
+            DB_PASSWORD="${{ secrets.DB_PASSWORD_TEST }}"
+          elif [ "$ENV" = "prod" ]; then
+            DB_PASSWORD="${{ secrets.DB_PASSWORD_PROD }}"
+          else
+            echo "❌ Error: Unknown environment: ${ENV}"
+            exit 1
+          fi
+          
+          DB_USERNAME="${DB_USERNAME:-ctfdadmin}"
+          
+          if [ -z "$DB_PASSWORD" ]; then
+            echo "❌ Error: DB_PASSWORD_${ENV} must be set in GitHub Secrets"
+            exit 1
+          fi
+          
+          PARAMS="Env=${{ env.ENV }}"
+          PARAMS="${PARAMS} KmsKeyArn=${{ steps.bootstrap.outputs.kms_key_arn }}"
+          PARAMS="${PARAMS} ImageUri=${{ env.IMAGE_URI }}"
+          PARAMS="${PARAMS} AppName=${{ env.APP_NAME }}"
+          PARAMS="${PARAMS} AppPort=${{ env.APP_PORT }}"
+          PARAMS="${PARAMS} DesiredCount=${DESIRED_COUNT}"
+          PARAMS="${PARAMS} Cpu=${{ env.CPU }}"
+          PARAMS="${PARAMS} Memory=${{ env.MEMORY }}"
+          PARAMS="${PARAMS} AcmCertificateArn="
+          PARAMS="${PARAMS} DBUsername=${DB_USERNAME}"
+          PARAMS="${PARAMS} DBPassword=${DB_PASSWORD}"
+          PARAMS="${PARAMS} SecretKey=${SECRET_KEY}"
+          PARAMS="${PARAMS} UseRedisTLS=${{ env.USE_REDIS_TLS }}"
+          PARAMS="${PARAMS} ExistingUploadBucketName=${{ env.EXISTING_UPLOAD_BUCKET_NAME }}"
+          
+          echo "params=${PARAMS}" >> $GITHUB_OUTPUT
+          echo "action=${ACTION}" >> $GITHUB_OUTPUT
+          
+          echo "📝 Generated parameters from env/ file:"
+          echo "   Action: ${ACTION}"
+          echo "   DesiredCount: ${DESIRED_COUNT}"
+          echo "   ExistingUploadBucketName: ${{ env.EXISTING_UPLOAD_BUCKET_NAME }}"
+      
+      - name: Package CloudFormation Templates
+        if: github.event.inputs.action != 'delete'
+        run: |
+          echo "📦 Packaging templates and uploading to S3..."
+          aws cloudformation package \
+            --template-file cfn/main/root.yaml \
+            --s3-bucket ${{ steps.bootstrap.outputs.s3_bucket }} \
+            --s3-prefix cfn \
+            --output-template-file root.packaged.yaml
+          
+          echo "✅ Templates uploaded to S3"
+      
+      - name: Deploy CloudFormation Stack
+        if: github.event.inputs.action != 'delete'
+        run: |
+          echo "🚀 Deploying stack: ${{ env.STACK_NAME }}"
+          echo "🎯 Action: ${{ steps.params.outputs.action }}"
+          echo "📝 Parameters generated from env/ file"
+          
+          aws cloudformation deploy \
+            --template-file root.packaged.yaml \
+            --stack-name ${{ env.STACK_NAME }} \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --parameter-overrides ${{ steps.params.outputs.params }} \
+            --no-fail-on-empty-changeset
+          
+          echo "✅ Deployment complete"
+      
+      - name: Get Stack Outputs
+        if: (github.event.inputs.action == 'start' || github.event.inputs.action == '') && github.event.inputs.action != 'delete'
+        run: |
+          echo "📊 Stack Outputs:"
+          aws cloudformation describe-stacks \
+            --stack-name ${{ env.STACK_NAME }} \
+            --query 'Stacks[0].Outputs' \
+            --output table

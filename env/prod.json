@@ -1,0 +1,14 @@
+{
+  "Env": "prod",
+  "Region": "ap-northeast-2",
+  "AppName": "ctfd",
+  "AppPort": 8000,
+  "ImageUri": "ghcr.io/ctfd/ctfd:latest",
+  "Cpu": 1024,
+  "Memory": 2048,
+  "DesiredCountStart": 2,
+  "DesiredCountStop": 0,
+  "ExistingUploadBucketName": "prod-ctfd-uploads-${ACCOUNT_ID}",
+  "UseRedisTLS": "true"
+}
+

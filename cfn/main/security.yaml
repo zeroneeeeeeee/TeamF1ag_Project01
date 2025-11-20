@@ -1,0 +1,174 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >
+  IAM Roles, KMS Key, and Security Groups for Secure Cloud Infra Automation.
+
+Parameters:
+  Env:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, test, prod]
+    Description: Environment name
+
+  AppPort:
+    Type: Number
+    Default: 8000
+    Description: Application port for ECS tasks (CTFd default: 8000)
+
+  KmsKeyArn:
+    Type: String
+    Description: KMS Key ARN for CloudWatch Logs encryption (pre-created externally)
+
+Resources:
+  # IAM Role: ECS Task Execution Role
+  EcsTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${Env}-ecs-task-execution-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: CloudWatchLogsKmsPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:GenerateDataKey
+                Resource: !Ref KmsKeyArn
+        - PolicyName: SecretsManagerAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                Resource: !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${Env}/ctfd/*
+      Tags:
+        - Key: Name
+          Value: !Sub ${Env}-ecs-task-execution-role
+        - Key: Environment
+          Value: !Ref Env
+
+  # IAM Role: ECS Task Role
+  EcsTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${Env}-ecs-task-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: MinimalAppPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/${Env}/*
+      Tags:
+        - Key: Name
+          Value: !Sub ${Env}-ecs-task-role
+        - Key: Environment
+          Value: !Ref Env
+
+  # Security Groups
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub ALB security group for ${Env}
+      VpcId: !ImportValue
+        Fn::Sub: '${Env}-VpcId'
+      GroupName: !Sub ${Env}-alb-sg
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: Allow HTTP from internet
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: Allow HTTPS from internet
+      SecurityGroupEgress: []
+      Tags:
+        - Key: Name
+          Value: !Sub ${Env}-alb-sg
+        - Key: Environment
+          Value: !Ref Env
+
+  EcsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub ECS tasks security group for ${Env}
+      VpcId: !ImportValue
+        Fn::Sub: '${Env}-VpcId'
+      GroupName: !Sub ${Env}-ecs-sg
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref AppPort
+          ToPort: !Ref AppPort
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
+          Description: Allow traffic from ALB
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound via NAT Gateway
+      Tags:
+        - Key: Name
+          Value: !Sub ${Env}-ecs-sg
+        - Key: Environment
+          Value: !Ref Env
+
+  AlbToEcsAppPortEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref AlbSecurityGroup
+      IpProtocol: tcp
+      FromPort: !Ref AppPort
+      ToPort: !Ref AppPort
+      DestinationSecurityGroupId: !Ref EcsSecurityGroup
+      Description: Allow outbound to ECS tasks
+
+Outputs:
+  KmsKeyId:
+    Description: KMS Key ARN (external, passed as parameter)
+    Value: !Ref KmsKeyArn
+    Export:
+      Name: !Sub ${Env}-KmsKeyId
+
+  EcsTaskExecutionRoleArn:
+    Value: !GetAtt EcsTaskExecutionRole.Arn
+    Export:
+      Name: !Sub ${Env}-EcsTaskExecutionRoleArn
+
+  EcsTaskRoleArn:
+    Value: !GetAtt EcsTaskRole.Arn
+    Export:
+      Name: !Sub ${Env}-EcsTaskRoleArn
+
+  AlbSecurityGroupId:
+    Value: !Ref AlbSecurityGroup
+    Export:
+      Name: !Sub ${Env}-AlbSecurityGroupId
+
+  EcsSecurityGroupId:
+    Value: !Ref EcsSecurityGroup
+    Export:
+      Name: !Sub ${Env}-EcsSecurityGroupId
+

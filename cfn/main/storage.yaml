@@ -1,0 +1,101 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >
+  S3 Bucket for CTFd file uploads - Secure storage with encryption and lifecycle policies.
+
+Parameters:
+  Env:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, test, prod]
+    Description: Environment name
+
+  ExistingBucketName:
+    Type: String
+    Default: ""
+    Description: (Optional) Provide an existing S3 bucket name to reuse instead of creating a new one. Leave empty to create a new bucket.
+
+Conditions:
+  CreateNewBucket: !Equals [!Ref ExistingBucketName, ""]
+
+Resources:
+  # S3 Bucket for CTFd Uploads
+  CTFdUploadBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain  # 스택 삭제 시 버킷 보존
+    Condition: CreateNewBucket
+    Properties:
+      BucketName: !Sub ${Env}-ctfd-uploads-${AWS::AccountId}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      #VersioningConfiguration:
+      #  Status: Enabled  # 버전 관리 활성화
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256  # 기본 암호화 (무료)
+              # 또는 KMS: KMSMasterKeyID: !Ref KmsKeyArn
+      LifecycleConfiguration:
+        Rules:
+          # ⚠️ 주의: VersioningConfiguration이 활성화된 경우에만 사용
+          # 버전 관리가 비활성화되면 이 규칙도 주석 처리 필요
+          # - Id: DeleteOldVersions
+          #   Status: Enabled
+          #   NoncurrentVersionExpirationInDays: 90  # 90일 후 이전 버전 삭제
+          - Id: DeleteOldUploads
+            Status: Enabled
+            ExpirationInDays: 365  # 1년 후 파일 삭제 (선택)
+      Tags:
+        - Key: Name
+          Value: !Sub ${Env}-ctfd-uploads
+        - Key: Environment
+          Value: !Ref Env
+        - Key: Application
+          Value: CTFd
+
+  # S3 Bucket Policy (ECS Task Role 접근만 허용)
+  CTFdUploadBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !If [CreateNewBucket, !Ref CTFdUploadBucket, !Ref ExistingBucketName]
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowECSTaskRoleAccess
+            Effect: Allow
+            Principal:
+              AWS: !ImportValue
+                Fn::Sub: '${Env}-EcsTaskRoleArn'
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:DeleteObject
+              - s3:ListBucket
+            Resource:
+              - !If
+                - CreateNewBucket
+                - !Sub ${CTFdUploadBucket.Arn}/*
+                - !Sub arn:aws:s3:::${ExistingBucketName}/*
+              - !If
+                - CreateNewBucket
+                - !GetAtt CTFdUploadBucket.Arn
+                - !Sub arn:aws:s3:::${ExistingBucketName}
+
+Outputs:
+  CTFdUploadBucketName:
+    Description: S3 Bucket Name for CTFd Uploads
+    Value: !If [CreateNewBucket, !Ref CTFdUploadBucket, !Ref ExistingBucketName]
+    Export:
+      Name: !Sub ${Env}-CTFdUploadBucketName
+
+  CTFdUploadBucketArn:
+    Description: S3 Bucket ARN for CTFd Uploads
+    Value: !If
+      - CreateNewBucket
+      - !GetAtt CTFdUploadBucket.Arn
+      - !Sub arn:aws:s3:::${ExistingBucketName}
+    Export:
+      Name: !Sub ${Env}-CTFdUploadBucketArn
+

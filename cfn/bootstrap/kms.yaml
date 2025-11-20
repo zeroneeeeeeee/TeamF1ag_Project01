@@ -1,0 +1,88 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: KMS Key for infrastructure encryption (CloudWatch Logs, RDS, Secrets Manager)
+
+Parameters:
+  Env:
+    Type: String
+    AllowedValues: [dev, test, prod]
+    Description: Environment name
+
+Resources:
+  KmsKey:
+    Type: AWS::KMS::Key
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: !Sub Infrastructure encryption key for ${Env} environment (CloudWatch Logs, RDS, Secrets Manager)
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EnableIAMUserPermissions
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${AWS::AccountId}:root
+            Action: kms:*
+            Resource: '*'
+          - Sid: AllowCloudWatchLogs
+            Effect: Allow
+            Principal:
+              Service: !Sub logs.${AWS::Region}.amazonaws.com
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:CreateGrant
+            Resource: '*'
+            Condition:
+              ArnLike:
+                kms:EncryptionContext:aws:logs:arn: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/${Env}/*
+          - Sid: AllowCloudWatchLogsDescribeKey
+            Effect: Allow
+            Principal:
+              Service: !Sub logs.${AWS::Region}.amazonaws.com
+            Action:
+              - kms:DescribeKey
+            Resource: '*'
+          - Sid: AllowRDS
+            Effect: Allow
+            Principal:
+              Service: rds.amazonaws.com
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:CreateGrant
+            Resource: '*'
+          - Sid: AllowSecretsManager
+            Effect: Allow
+            Principal:
+              Service: secretsmanager.amazonaws.com
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:CreateGrant
+            Resource: '*'
+
+  KmsKeyAlias:
+    Type: AWS::KMS::Alias
+    UpdateReplacePolicy: Retain
+    Properties:
+      AliasName: !Sub alias/${Env}-infra
+      TargetKeyId: !Ref KmsKey
+
+Outputs:
+  KmsKeyArn:
+    Description: ARN of the environment KMS Key
+    Value: !GetAtt KmsKey.Arn
+    Export:
+      Name: !Sub ${Env}-KmsKeyArn
+  KmsKeyId:
+    Description: ID of the environment KMS Key
+    Value: !Ref KmsKey
+    Export:
+      Name: !Sub ${Env}-KmsKeyId
+

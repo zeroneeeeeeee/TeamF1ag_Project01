@@ -57,6 +57,9 @@ Resources:
                   - iam:PutRolePolicy
                   - iam:DeleteRolePolicy
                   - iam:GetRolePolicy
+                  - iam:TagRole
+                  - iam:UntagRole
+                  - iam:ListRoleTags
                 Resource: '*'
               - Sid: AllowPassRoleToECS
                 Effect: Allow

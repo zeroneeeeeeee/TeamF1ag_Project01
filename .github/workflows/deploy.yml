@@ -254,4 +254,4 @@ jobs:
           aws cloudformation describe-stacks \
             --stack-name ${{ env.STACK_NAME }} \
             --query 'Stacks[0].Outputs' \
-            --output table
+            --output table | sed -E 's/[a-z0-9.-]+\.(rds|elb|cache)\.amazonaws\.com[^|]*/***REDACTED***/gi; s/arn:aws:[^|]+/***REDACTED***/g; s|https?://[^|]+|***REDACTED***|g; s/vpc-[a-z0-9]+/***REDACTED***/gi'

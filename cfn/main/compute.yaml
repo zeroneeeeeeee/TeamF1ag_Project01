@@ -159,8 +159,8 @@ Resources:
     Properties:
       LogGroupName: !Sub /ecs/${Env}/${AppName}
       RetentionInDays: 7
-      KmsKeyId: !ImportValue
-        Fn::Sub: '${Env}-KmsKeyId'
+      KmsKeyId: !ImportValue # arn 넣어야함;;
+        Fn::Sub: '${Env}-KmsKeyArn'
       Tags:
         - Key: Name
           Value: !Sub /ecs/${Env}/${AppName}

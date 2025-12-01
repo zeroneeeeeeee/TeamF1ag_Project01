@@ -29,6 +29,8 @@ Resources:
             Condition:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                #token.actions.githubusercontent.com:sub: !Sub repo:${GitHubRepo}:*
                 token.actions.githubusercontent.com:sub: !Sub repo:${GitHubRepo}:ref:refs/heads/*
       Policies:
         - PolicyName: GitHubActionsDeployPolicy
@@ -46,7 +48,7 @@ Resources:
                   - rds:*
                   - elasticache:*
                   - secretsmanager:*
-                  - kms:DescribeKey
+                  - kms:*
                   - iam:GetRole
                   - iam:CreateRole
                   - iam:DeleteRole
@@ -55,6 +57,9 @@ Resources:
                   - iam:PutRolePolicy
                   - iam:DeleteRolePolicy
                   - iam:GetRolePolicy
+                  - iam:TagRole
+                  - iam:UntagRole
+                  - iam:ListRoleTags
                 Resource: '*'
               - Sid: AllowPassRoleToECS
                 Effect: Allow
